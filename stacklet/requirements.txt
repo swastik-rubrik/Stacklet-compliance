@@ -1,0 +1,5 @@
+boto3
+azure-identity
+azure-mgmt-compute
+pyyaml
+google-cloud-compute
