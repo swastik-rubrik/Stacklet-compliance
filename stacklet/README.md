@@ -101,5 +101,3 @@ python3 automate-tagging.py --skip-region me-central-1
 | `inputs/`                     | `make_changes-*.csv` + per-account defaults      |
 | `static/resource_type_list.py`| Registry for listing (list side)                 |
 | `static/resource_type_update.py`| Registry for tagging (update side)             |
-| `docs/`                       | Per-change notes                                 |
-
