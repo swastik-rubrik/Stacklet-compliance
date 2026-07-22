@@ -19,91 +19,11 @@ import argparse
 import boto3
 import csv
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from static.resource_type_list import ResourceConfig, RESOURCE_TYPES
 
 OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
-
-
-@dataclass
-class ResourceConfig:
-    describe_method: str               # ec2 client method to call
-    response_key: str                  # top-level key in the API response
-    owner_key: str                     # ownership filter param ("OwnerIds" vs "Owners")
-    id_field: str                      # API field name for the resource ID
-    id_column: str                     # CSV column name for the ID
-    meta_columns: list[str]            # non-tag metadata columns before rbrk_* tags
-    extract_meta: Callable[[Any], list]
-    trailing_columns: list[str]        # columns written after rbrk_* tags (e.g. description)
-    extract_trailing: Callable[[Any], list]
-    result_filter: Callable[[list, str], list] | None = None  # post-fetch filter when API lacks an owner param
-
-
-RESOURCE_TYPES: dict[str, ResourceConfig] = {
-    "snapshot": ResourceConfig(
-        describe_method="describe_snapshots",
-        response_key="Snapshots",
-        owner_key="OwnerIds",
-        id_field="SnapshotId",
-        id_column="snapshot_id",
-        meta_columns=["completion_time"],
-        extract_meta=lambda s: [s.get("CompletionTime", "")],
-        trailing_columns=["description"],
-        extract_trailing=lambda s: [s.get("Description", "")],
-    ),
-    "ami": ResourceConfig(
-        describe_method="describe_images",
-        response_key="Images",
-        owner_key="Owners",
-        id_field="ImageId",
-        id_column="image_id",
-        meta_columns=["creation_date", "state", "architecture"],
-        extract_meta=lambda i: [
-            i.get("CreationDate", ""),
-            i.get("State", ""),
-            i.get("Architecture", ""),
-        ],
-        trailing_columns=["description"],
-        extract_trailing=lambda i: [i.get("Description", "")],
-    ),
-    "ebs": ResourceConfig(
-        describe_method="describe_volumes",
-        response_key="Volumes",
-        owner_key="",
-        id_field="VolumeId",
-        id_column="volume_id",
-        meta_columns=["create_time", "size_gb", "state", "volume_type", "availability_zone"],
-        extract_meta=lambda v: [
-            v.get("CreateTime", ""),
-            str(v.get("Size", "")),
-            v.get("State", ""),
-            v.get("VolumeType", ""),
-            v.get("AvailabilityZone", ""),
-        ],
-        trailing_columns=[],
-        extract_trailing=lambda _: [],
-    ),
-    "prefix-list": ResourceConfig(
-        describe_method="describe_managed_prefix_lists",
-        response_key="PrefixLists",
-        owner_key="",
-        id_field="PrefixListId",
-        id_column="prefix_list_id",
-        meta_columns=["prefix_list_name", "state", "max_entries", "address_family"],
-        extract_meta=lambda p: [
-            p.get("PrefixListName", ""),
-            p.get("State", ""),
-            str(p.get("MaxEntries", "")),
-            p.get("AddressFamily", ""),
-        ],
-        trailing_columns=[],
-        extract_trailing=lambda _: [],
-        result_filter=lambda items, _: [i for i in items if i.get("OwnerId") != "aws"],
-    ),
-}
-
 
 def get_account_id(session):
     return session.client("sts").get_caller_identity()["Account"]
@@ -115,19 +35,41 @@ def get_regions(session):
 
 
 def list_resources(session, owner_id, region, config: ResourceConfig) -> list:
-    ec2 = session.client("ec2", region_name=region)
-    method = getattr(ec2, config.describe_method)
+    client_name = getattr(config, "client_name", "ec2")
+    client = session.client(client_name, region_name=region)
+
+    method = getattr(client, config.describe_method)
     kwargs = {config.owner_key: [owner_id]} if config.owner_key else {}
+    kwargs.update(getattr(config, "extra_kwargs", {}) or {})
     results = method(**kwargs)[config.response_key]
     if config.result_filter:
         results = config.result_filter(results, owner_id)
     return results
 
+def fetch_tags_for_arns(session, region, config, arns: list[str]) -> dict[str, list[dict]]:
+    """Fetch tags in bulk for a list of ARNs using the Tagging API (Max 100 per call)."""
+    if not arns:
+        return {}
+        
+    # Global resources (like IAM) MUST be queried for tags in us-east-1
+    client_region = "us-east-1" if getattr(config, "is_global", False) else region
+    tag_client = session.client("resourcegroupstaggingapi", region_name=client_region)
+    tags_by_arn = {}
+
+    # Chunk ARNs into batches of 100
+    for i in range(0, len(arns), 100):
+        batch = arns[i:i + 100]
+        try:
+            response = tag_client.get_resources(ResourceARNList=batch)
+            for resource in response.get("ResourceTagMappingList", []):
+                tags_by_arn[resource["ResourceARN"]] = resource.get("Tags", [])
+        except Exception as e:
+            print(f"  Warning: Failed to fetch tags for batch in {region} ({e})", file=sys.stderr)
+
+    return tags_by_arn
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="List AWS resources with their tags across all regions."
-    )
+    parser = argparse.ArgumentParser(description="List AWS resources with their tags across all regions.")
     parser.add_argument(
         "--resource-type", choices=list(RESOURCE_TYPES), default="snapshot",
         help="Resource type to list (default: snapshot)",
@@ -159,9 +101,24 @@ def main():
             continue
 
         if resources:
-            all_resources.extend({"region": region, **r} for r in resources)
+            for r in resources:
+                r["_arn"] = config.arn_formatter(r[config.id_field], region, owner_id)
+            
+            # Bulk fetch tags for all generated ARNs
+            arns = [r["_arn"] for r in resources]
+            tags_by_arn = fetch_tags_for_arns(session, region, config, arns)
+
+            for r in resources:
+                r["Tags"] = tags_by_arn.get(r["_arn"], [])
+                all_resources.append({"region": region, **r})
+
             region_counts[region] = len(resources)
             print(f"  {region}: {len(resources)}", file=sys.stderr)
+
+        is_global = getattr(config, "is_global", False)
+        if is_global:
+            print("  (Global resource: skipping remaining regions)", file=sys.stderr)
+            break
 
     # Collect all unique rbrk_* tag keys across all resources
     rbrk_keys = sorted({
@@ -184,8 +141,9 @@ def main():
         )
         for r in all_resources:
             tag_map = {t["Key"]: t["Value"] for t in (r.get("Tags") or [])}
+            arn = r["_arn"]
             writer.writerow(
-                [tag_map.get("Name", ""), r["region"], r[config.id_field]]
+                [tag_map.get("Name", ""), r["region"], arn]
                 + config.extract_meta(r)
                 + [tag_map.get(k, "") for k in rbrk_keys]
                 + config.extract_trailing(r)
