@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """Apply AWS tags from a make_changes CSV to resources.
 
-Filename convention (parsed automatically):
+Filename convention:
     make_changes-{resource_type}-{account_id}-{timestamp}.csv
-
-    resource_type  Supported: snapshots, volumes, instances, amis, security-groups, prefix-lists, ebs
-    account_id     12-digit AWS account number; validated against active credentials
 
 Usage:
     python3 make_changes-aws.py <csv_file>              # dry run (default)
@@ -17,7 +14,8 @@ Usage:
 Tag column detection:
     Any CSV column that is not the resource ID, 'region', or in the resource
     type's skip list is treated as a tag to apply. The 'name' column maps to
-    the AWS 'Name' tag key. Empty values are skipped.
+    the AWS 'Name' tag key. Placeholder values are skipped: an empty cell and
+    the literal 'undefined' are never written (only real values reach AWS).
 
 Extending to new resource types:
     Add an entry to RESOURCE_TYPES below with the correct id_column and
@@ -34,69 +32,28 @@ import csv
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import NamedTuple
 
 import boto3
-
-from cloud_platforms_python.update_tags_common import ResourceConfig, build_tags, parse_filename
+from update_tags_common import (build_tags, parse_filename, TagChange, write_change_report, format_change_line)
+from static.resource_type_update import RESOURCE_TYPES
 
 _BATCH_SIZE = 1_000
 OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
 
-RESOURCE_TYPES: dict[str, ResourceConfig] = {
-    "snapshot": ResourceConfig(
-        id_column="snapshot_id",
-        skip_columns=frozenset({"completion_time", "description"}),
-    ),
-    "volume": ResourceConfig(
-        id_column="volume_id",
-        skip_columns=frozenset({"create_time", "size_gb", "state", "description"}),
-    ),
-    "instance": ResourceConfig(
-        id_column="instance_id",
-        skip_columns=frozenset({"launch_time", "state", "instance_type", "vpc_id", "subnet_id"}),
-    ),
-    "ami": ResourceConfig(
-        id_column="image_id",
-        skip_columns=frozenset({"creation_date", "state", "description", "architecture"}),
-    ),
-    "security-group": ResourceConfig(
-        id_column="group_id",
-        skip_columns=frozenset({"description", "vpc_id"}),
-    ),
-    "prefix-list": ResourceConfig(
-        id_column="prefix_list_id",
-        skip_columns=frozenset({"prefix_list_name", "state", "max_entries", "address_family"}),
-    ),
-    "ebs": ResourceConfig(
-        id_column="volume_id",
-        skip_columns=frozenset({"create_time", "size_gb", "state", "volume_type", "availability_zone"}),
-    ),
-}
+_GET_RESOURCES_CHUNK = 100  # AWS limit for GetResources ResourceARNList
+_TAG_RESOURCES_BATCH = 20   # AWS limit for tag_resources ResourceARNList
 
-
-class TagChange(NamedTuple):
-    resource_id: str
-    region: str
-    tag_key: str
-    action: str    # "+" add, "~" update, "=" unchanged
-    old_value: str
-    new_value: str
-
-
-_DESCRIBE_TAGS_CHUNK = 200  # AWS hard limit on filter values per describe_tags call
-
-def fetch_current_tags(ec2_client, resource_ids: list[str]) -> dict[str, dict[str, str]]:
-    """Return {resource_id: {tag_key: tag_value}} for the given resource IDs."""
+def fetch_current_tags(tagging_client, arns: list[str]) -> dict[str, dict[str, str]]:
+    """Return {arn: {tag_key: tag_value}} for the given ARNs."""
     current: dict[str, dict[str, str]] = defaultdict(dict)
-    paginator = ec2_client.get_paginator("describe_tags")
-    for i in range(0, len(resource_ids), _DESCRIBE_TAGS_CHUNK):
-        chunk = resource_ids[i : i + _DESCRIBE_TAGS_CHUNK]
-        for page in paginator.paginate(
-            Filters=[{"Name": "resource-id", "Values": chunk}]
-        ):
-            for tag in page["Tags"]:
-                current[tag["ResourceId"]][tag["Key"]] = tag["Value"]
+    paginator = tagging_client.get_paginator("get_resources")
+    for i in range(0, len(arns), _GET_RESOURCES_CHUNK):
+        chunk = arns[i : i + _GET_RESOURCES_CHUNK]
+        for page in paginator.paginate(ResourceARNList=chunk):
+            for r_mapping in page["ResourceTagMappingList"]:
+                arn = r_mapping["ResourceARN"]
+                for tag in r_mapping.get("Tags", []):
+                    current[arn][tag["Key"]] = tag["Value"]
     return dict(current)
 
 
@@ -111,7 +68,7 @@ def verify_account(session: boto3.Session, expected: str) -> None:
         )
 
 
-def tag_resources_ec2(
+def tag_resources_aws(
     session: boto3.Session,
     region: str,
     resources: list[tuple[str, list[dict]]],
@@ -120,39 +77,41 @@ def tag_resources_ec2(
     summarize: bool,
     verbose_out=sys.stdout,
 ) -> tuple[int, int, list[TagChange]]:
-    """Tag EC2 resources in one region. Returns (tagged, errored, changes).
+    """Tag AWS resources in one region using Resource Groups Tagging API. Returns (tagged, errored, changes).
 
     Resources sharing identical tag sets are batched into single API calls
-    (up to _BATCH_SIZE resources per call). When verbose or summarize is set
+    (up to _TAG_RESOURCES_BATCH resources per call). When verbose or summarize is set
     in dry-run mode, current tags are fetched and compared per resource.
     """
-    ec2 = session.client("ec2", region_name=region)
+    tagging_client = session.client("resourcegroupstaggingapi", region_name=region)
     tagged = errored = 0
     changes: list[TagChange] = []
 
     # Pre-fetch current tags for all resources in this region in one pass.
     current_by_id: dict[str, dict[str, str]] = {}
     if dry_run and (verbose or summarize):
-        current_by_id = fetch_current_tags(ec2, [rid for rid, _ in resources])
+        current_by_id = fetch_current_tags(tagging_client, [arn for arn, _ in resources])
 
     # Group by tag fingerprint so resources with identical tags share a call.
     groups: dict[tuple, list[str]] = defaultdict(list)
     tags_by_fp: dict[tuple, list[dict]] = {}
-    for resource_id, tags in resources:
+    for arn, tags in resources:
         fp = tuple(sorted((t["Key"], t["Value"]) for t in tags))
-        groups[fp].append(resource_id)
+        groups[fp].append(arn)
         tags_by_fp[fp] = tags
 
-    for fp, ids in groups.items():
+    for fp, arns in groups.items():
         tags = tags_by_fp[fp]
-        for i in range(0, len(ids), _BATCH_SIZE):
-            batch = ids[i : i + _BATCH_SIZE]
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        
+        for i in range(0, len(arns), _TAG_RESOURCES_BATCH):
+            batch = arns[i : i + _TAG_RESOURCES_BATCH]
             if dry_run:
                 if verbose or summarize:
-                    for rid in batch:
-                        existing = current_by_id.get(rid, {})
+                    for arn in batch:
+                        existing = current_by_id.get(arn, {})
                         if verbose:
-                            print(f"  {rid} ({region})", file=verbose_out)
+                            print(f"  {arn}", file=verbose_out)
                         for t in tags:
                             key, new_val = t["Key"], t["Value"]
                             if key not in existing:
@@ -161,37 +120,27 @@ def tag_resources_ec2(
                                 action, old_val = "~", existing[key]
                             else:
                                 action, old_val = "=", existing[key]
-                            if verbose and action != "=":
-                                if action == "~":
-                                    print(f"    [{action}] {key}: {old_val} → {new_val}", file=verbose_out)
-                                else:
-                                    print(f"    [{action}] {key} = {new_val}", file=verbose_out)
+                            if verbose:
+                                line = format_change_line(
+                                    TagChange(arn, region, key, action, old_val, new_val)
+                                )
+                                if line:
+                                    print(line, file=verbose_out)
                             if summarize:
-                                changes.append(TagChange(rid, region, key, action, old_val, new_val))
+                                changes.append(TagChange(arn, region, key, action, old_val, new_val))
                 tagged += len(batch)
             else:
                 try:
-                    ec2.create_tags(Resources=batch, Tags=tags)
+                    tagging_client.tag_resources(ResourceARNList=batch, Tags=tag_dict)
                     if verbose:
-                        for rid in batch:
-                            print(f"  Tagged {rid} ({len(tags)} tags)", file=verbose_out)
+                        for arn in batch:
+                            print(f"  Tagged {arn} ({len(tags)} tags)", file=verbose_out)
                     tagged += len(batch)
                 except Exception as exc:
                     print(f"  ERROR batch [{batch[0]} …]: {exc}", file=sys.stderr)
                     errored += len(batch)
 
     return tagged, errored, changes
-
-
-def write_change_report(changes: list[TagChange], input_path: Path) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    outfile = OUTPUT_DIR / f"dry-run-{input_path.stem}.csv"
-    with open(outfile, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["resource_id", "region", "tag_key", "action", "old_value", "new_value"])
-        for c in changes:
-            writer.writerow([c.resource_id, c.region, c.tag_key, c.action, c.old_value, c.new_value])
-    return outfile
 
 
 def print_change_summary(changes: list[TagChange]) -> None:
@@ -305,7 +254,7 @@ def main() -> None:
             resources = by_region[region]
             print(f"{region:<25} {len(resources):>10}")
 
-            tagged, errored, changes = tag_resources_ec2(
+            tagged, errored, changes = tag_resources_aws(
                 session, region, resources, dry_run, verbose, args.summarize, verbose_out
             )
             total_tagged += tagged
