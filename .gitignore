@@ -2,3 +2,8 @@
 
 .env
 .DS_Store
+
+inputs/*
+outputs/*
+
+.vscode/*
