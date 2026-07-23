@@ -12,6 +12,10 @@ source .venv/bin/activate
 pip3 install -r requirements.txt
 ```
 
+## ResourceConfig Update
+You can add additional resource config in static/resource_type_list.py  and static/resource_type_update.py 
+
+
 ## Steps
 
 **1. Create `inputs/rbrk-values-<account-id>.json`** — the values for the 6
