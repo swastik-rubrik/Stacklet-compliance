@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-run_listings.py - loop  over resources defined in static/resource_type_list.py
+run_listings.py - loop  over resources.
 
 Examples
 --------
-  awslogin my-account        
+  awslogin(alias) <account-name>        
   python3 run-listings.py --skip-region me-central-1
   python3 run-listings.py --only rds --only s3
   python3 run-listings.py --exclude ecs --exclude eks --exclude dynamodb-table
@@ -17,7 +17,12 @@ import sys
 import time
 from pathlib import Path
 
-DEFAULT_SCRIPT = Path(__file__).resolve().parent / "list-resource-aws.py"
+HERE = Path(__file__).resolve().parent      # stacklet/scripts
+STACKLET = HERE.parent                        # stacklet/ (holds list-resource-aws.py, static/, ...)
+sys.path.insert(0, str(STACKLET))
+from static.selection import load_selection
+
+DEFAULT_SCRIPT = STACKLET / "list-resource-aws.py"
 
 
 def load_resource_types(script_path: Path) -> list:
@@ -69,13 +74,39 @@ def main() -> None:
     show_account(args.no_check)
 
     all_types = load_resource_types(args.script)
+
+    # Selection precedence: explicit --only > stacklet-resource.json > all types.
+    try:
+        selection = load_selection()
+    except ValueError as e:
+        sys.exit(f"ERROR: {e}")
+
     if args.only:
-        unknown = [t for t in args.only if t not in all_types]
+        requested = args.only
+        source = "--only"
+    elif selection:
+        requested = selection
+        source = "stacklet-resource.json"
+    else:
+        requested = None
+        source = None
+
+    if requested is not None:
+        unknown = [t for t in requested if t not in all_types]
+        if unknown and source == "--only":
+            # Explicit override: a typo here is worth stopping for.
+            sys.exit(f"ERROR: unknown {source} types: {', '.join(unknown)}\n"
+                     f"       not in this account's registry ({len(all_types)} known types).")
         if unknown:
-            sys.exit(f"ERROR: unknown --only types: {', '.join(unknown)}")
-        types = [t for t in all_types if t in set(args.only)]
+            # Selection file: don't fail on types with no config -- skip and report them.
+            print(f"Skipping {len(unknown)} type(s) from {source} not in the "
+                  f"registry ({len(all_types)} known): {', '.join(unknown)}")
+        # Preserve registry order; drop any --exclude'd keys.
+        types = [t for t in all_types if t in set(requested) and t not in set(args.exclude)]
+        print(f"Using selection from {source} ({len(types)} type(s)).")
     else:
         types = [t for t in all_types if t not in set(args.exclude)]
+        print("No selection in stacklet-resource.json (empty/missing) -> listing all types.")
 
     print(f"Listing {len(types)} resource type(s): {', '.join(types)}")
     if args.skip_region:

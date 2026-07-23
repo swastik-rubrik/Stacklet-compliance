@@ -25,8 +25,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+HERE = Path(__file__).resolve().parent      # stacklet/scripts
+STACKLET = HERE.parent                        # stacklet/ (holds tag-editor.py, static/, ...)
+sys.path.insert(0, str(STACKLET))
 
 _tag_editor = importlib.import_module("tag-editor")
 OUTPUT_DIR = _tag_editor.OUTPUT_DIR
@@ -36,6 +37,7 @@ write_payload = _tag_editor.write_payload
 apply_dry_run_payload = _tag_editor.apply_dry_run_payload
 
 from static.resource_type_update import RESOURCE_TYPES
+from static.selection import load_selection
 
 _LISTING_RE = re.compile(r"^(?P<resource_type>[a-z][a-z0-9-]*)-(?P<account_id>\d{12})-\d{8}-\d{6}\.csv$")
 
@@ -180,7 +182,30 @@ def main() -> None:
     parser.add_argument("--skip-region", metavar="REGION", action="append", default=[], help="Skip this region (may be repeated)")
     args = parser.parse_args()
 
-    listings = find_listing_csvs(only_types=set(args.only) if args.only else None)
+    # Selection precedence: explicit --only > stacklet-resource.json > all types.
+    try:
+        selection = load_selection()
+    except ValueError as e:
+        sys.exit(f"ERROR: {e}")
+
+    if args.only:
+        only_types = set(args.only)
+        print(f"Restricting to --only: {', '.join(sorted(only_types))}", file=sys.stderr)
+    elif selection:
+        only_types = set(selection)
+        print(f"Restricting to stacklet-resource.json ({len(only_types)} type(s)): "
+              f"{', '.join(selection)}", file=sys.stderr)
+        # Don't fail on selected types with no config -- just report them.
+        unknown = [t for t in selection if t not in RESOURCE_TYPES]
+        if unknown:
+            print(f"Ignoring {len(unknown)} selected type(s) not in the update "
+                  f"registry: {', '.join(unknown)}", file=sys.stderr)
+    else:
+        only_types = None
+        print("No selection in stacklet-resource.json (empty/missing) -> "
+              "processing all eligible listing CSVs.", file=sys.stderr)
+
+    listings = find_listing_csvs(only_types=only_types)
     if not listings:
         print("No eligible listing CSVs found in outputs/.", file=sys.stderr)
         return
