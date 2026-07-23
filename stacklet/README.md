@@ -2,7 +2,7 @@
 
 These scripts bulk-apply `rbrk_*` tags to AWS resources managed by Stacklet.
 
-## Initialize your environment
+## Setup
 
 ```shell
 # Run from the /stacklet directory
@@ -12,92 +12,51 @@ source .venv/bin/activate
 pip3 install -r requirements.txt
 ```
 
-## The workflow
+## Steps
 
-```
-awslogin  →  list  →  fill (tag-editor)  →  dry-run  →  apply
-```
+**1. Create `inputs/rbrk-values-<account-id>.json`** — the values for the 6
+`rbrk_*` tags for that account.
 
-1. **Log in** — `awslogin <account>`. Credentials must match the account you tag.
-2. **List** resources → CSV in `outputs/`.
-3. **Fill** the `undefined` `rbrk_*` cells → `make_changes-*.csv` in `inputs/`.
-4. **Dry-run** against live AWS to preview the exact tag changes.
-5. **Apply** — the only step that writes to AWS. Always manual.
+**2. Create `static/stacklet-resource.json`** — the list of resources to process
+for that AWS account.
 
----
-
-## Scripts
-
-### 1. List resources — `list-resource-aws.py`
-
-One resource type → one CSV in `outputs/`.
+**3. Log in and list the resources:**
 
 ```shell
-python3 list-resource-aws.py --resource-type snapshot --skip-region me-central-1
+awslogin <account>          # e.g. ss0
+python3 scripts/run-listings.py     # lists resources from stacklet-resource.json -> CSVs in outputs/
 ```
 
-Loop over **every** type in `static/resource_type_list.py` with `run-listings.py`:
+**4. Build the change files** (no AWS call):
 
 ```shell
-python3 run-listings.py --skip-region me-central-1        # all types
-python3 run-listings.py --only rds --only s3              # just these
-python3 run-listings.py --exclude ecr                     # all but these
+python3 scripts/automate-tagging.py
 ```
 
-### 2. Fill + apply (UI) — `tag-editor.py`
+Creates:
+- `inputs/make_changes-<resource>-<account-id>-<timestamp>.csv`
+  = **source of truth for the changes to make in real AWS cloud**
+- `outputs/dry-run-make_changes-<resource>-<account-id>-<timestamp>.txt`
+  = preview of those changes
 
-Local web UI at http://localhost:8765.
+**5. Apply to AWS** (the only step that writes to the cloud):
 
-```shell
-python3 tag-editor.py
-```
-
-- Pick a listing CSV from `outputs/`, enter each `rbrk_*` value once (blank =
-  skip that column), **Preview**, then **Write make_changes file** → `inputs/`.
-- Values can be saved as **per-account defaults** so later CSVs prefill.
-- **Apply to AWS** panel: **Dry Run (AWS)** shows the diff vs. live tags, then
-  **Apply Tags** writes them.
-- **Already have a `make_changes-*.csv`?** Pick it from the *"Apply it
-  directly"* dropdown to jump straight to the Apply-to-AWS panel — no
-  fill/write needed.
-
-Only literal `undefined` cells are ever filled; empty cells and real values are
-left untouched, so nothing unexpected reaches AWS.
-
-### 3. Dry-run / apply (CLI) — `update_tags-aws.py`
-
-The CLI equivalent of the UI's apply panel. The filename must keep the
-`make_changes-<type>-<account>-<timestamp>.csv` format — it's how the script
-learns the resource type and account.
-
-```shell
-# Dry-run (default): shows what would change
-python3 update_tags-aws.py make_changes-snapshot-<account>-<ts>.csv --skip-region me-central-1 --log
-
-# Apply, after reviewing the dry-run
-python3 update_tags-aws.py make_changes-snapshot-<account>-<ts>.csv --skip-region me-central-1 --apply
-```
-
-### 4. Automate fill + dry-run — `automate-tagging.py`
-
-Runs steps 3–4 (write make_changes + AWS dry-run, using each account's saved
-defaults) across **every** listing CSV in `outputs/`, and writes one combined
-report to `outputs/tagging-automation-report-<ts>.md`. It **never applies** —
-apply stays manual. See `automate-tagging.md`.
-
-```shell
-python3 automate-tagging.py                    # every eligible CSV in outputs/
-python3 automate-tagging.py --only ecr s3      # restrict to types
-python3 automate-tagging.py --skip-region me-central-1
-```
+- **UI:** `python3 tag-editor.py` → *"Apply it directly"* → **Dry Run** → **Apply Tags**
+- **CLI (one file):**
+  ```shell
+  python3 update_tags-aws.py <make_changes-csv>            # dry run (default)
+  python3 update_tags-aws.py <make_changes-csv> --apply    # apply changes
+  ```
+- **All files at once:** `python3 scripts/automate-apply.py`
 
 ---
 
 ## Layout
 
-| Path                          | What                                             |
-|-------------------------------|--------------------------------------------------|
-| `outputs/`                    | Listing CSVs + dry-run reports (gitignored)      |
-| `inputs/`                     | `make_changes-*.csv` + per-account defaults      |
-| `static/resource_type_list.py`| Registry for listing (list side)                 |
-| `static/resource_type_update.py`| Registry for tagging (update side)             |
+| Path                              | What                                             |
+|-----------------------------------|--------------------------------------------------|
+| `outputs/`                        | Listing CSVs + dry-run reports (gitignored)      |
+| `inputs/`                         | `make_changes-*.csv` + per-account defaults      |
+| `static/resource_type_list.py`    | Registry for listing (list side)                 |
+| `static/resource_type_update.py`  | Registry for tagging (update side)               |
+| `static/stacklet-resource.json`   | Selection: which types a run processes           |
