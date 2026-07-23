@@ -20,12 +20,11 @@ Apply directly:
     Apply-to-AWS panel (dry run + apply). 
 
 Fill rule :
-    Only columns you enter a value for are touched, and only their "undefined"
-    cells are filled. Empty cells (the tag is absent on the resource) are left
-    untouched and never written -- we only ever replace a literal "undefined".
-    Unmarked columns are left exactly as-is: an "undefined" stays "undefined",
-    so those tags are not changed on AWS. Cells that already hold a real value
-    are left untouched too.
+    Only columns you enter a value for are touched, and their placeholder cells
+    are filled -- both empty cells (the tag is absent on the resource) and literal
+    "undefined" cells get the value. Unmarked columns are left exactly as-is, so
+    those tags are not changed on AWS. Cells that already hold a real value are
+    left untouched too (unless overwrite is set).
 
 
 Outputs: make_changes CSV -> inputs/dry-run .txt report -> outputs/ . No AWS calls.
@@ -52,7 +51,7 @@ INPUT_DIR = HERE.parent / "inputs"     # generated make_changes CSVs (write)
 sys.path.insert(0, str(HERE))
 from update_tags_common import (
     FILENAME_PATTERN, TagChange, write_change_report_txt,
-    build_tags, parse_filename,
+    build_tags, parse_filename, is_placeholder,
 )
 from static.resource_type_update import RESOURCE_TYPES
 
@@ -166,7 +165,10 @@ def apply_values(fieldnames: list[str], rows: list[dict], values: dict, overwrit
             if not fill_val:
                 continue  # unmarked column: leave the cell untouched
             cur = orig.get(c) or ""
-            if overwrite or is_undefined(cur):
+            # Fill both empty cells (tag absent) and literal "undefined" -> a
+            # placeholder gets the account default. Real existing values are only
+            # replaced when overwrite is set.
+            if overwrite or is_placeholder(cur):
                 if cur.strip() != fill_val:
                     per_col[c] += 1
                     changed = True
@@ -187,8 +189,8 @@ def load_payload(name: str) -> dict:
     fieldnames, rows = read_csv(path)
     rbrk = rbrk_columns(fieldnames)
 
-    per_col_missing = {c: sum(1 for r in rows if is_undefined(r.get(c, ""))) for c in rbrk}
-    rows_with_missing = sum(1 for r in rows if any(is_undefined(r.get(c, "")) for c in rbrk))
+    per_col_missing = {c: sum(1 for r in rows if is_placeholder(r.get(c, ""))) for c in rbrk}
+    rows_with_missing = sum(1 for r in rows if any(is_placeholder(r.get(c, "")) for c in rbrk))
 
     out_name = make_changes_name(path.name)
     meta = _META_RE.match(path.name)
@@ -709,10 +711,11 @@ function collectValues() {
 }
 
 function missingRows(rows, rbrk) {
-  return rows.map((r, i) => ({ r, i })).filter(x => rbrk.some(c => isUndefined(x.r[c])));
+  return rows.map((r, i) => ({ r, i })).filter(x => rbrk.some(c => isFillable(x.r[c])));
 }
-// Only a literal "undefined" is fillable. Empty cells (tag absent) are left alone.
+// A cell is fillable when it's a placeholder: empty (tag absent) OR "undefined".
 function isUndefined(v) { return (v || '').trim().toLowerCase() === 'undefined'; }
+function isFillable(v) { const s = (v || '').trim(); return s === '' || s.toLowerCase() === 'undefined'; }
 
 // original rows are DATA.rows; `newRows` (optional) is the previewed result.
 function renderTable(entries, j, title, newRows) {
@@ -731,10 +734,10 @@ function renderTable(entries, j, title, newRows) {
       if (j.rbrk.includes(c)) {
         if (newRows) {
           const nv = newRows[i][c] == null ? '' : newRows[i][c];
-          if (isUndefined(origVal) && nv && !isUndefined(nv)) { val = nv; cls = 'filled'; }
-          else if (isUndefined(origVal)) { val = origVal || '(empty)'; cls = 'missing'; }
+          if (isFillable(origVal) && nv && !isFillable(nv)) { val = nv; cls = 'filled'; }
+          else if (isFillable(origVal)) { val = origVal || '(empty)'; cls = 'missing'; }
           else val = nv;
-        } else if (isUndefined(origVal)) { cls = 'missing'; }
+        } else if (isFillable(origVal)) { cls = 'missing'; }
       }
       html += '<td class="' + (isId ? 'mono ' : '') + cls + '">' + escapeHtml(val) + '</td>';
     }
