@@ -1,2 +1,4 @@
 inputs/*
 outputs/*
+/static/stacklet-resource.json
+/static/__pycache__

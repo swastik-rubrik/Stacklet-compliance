@@ -19,11 +19,18 @@ import argparse
 import boto3
 import csv
 import sys
+from botocore.config import Config
 from datetime import datetime, timezone
 from pathlib import Path
 from static.resource_type_list import ResourceConfig, RESOURCE_TYPES
 
 OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
+
+CLIENT_CONFIG = Config(
+    connect_timeout=5,
+    read_timeout=15,
+    retries={"max_attempts": 2, "mode": "standard"},
+)
 
 def get_account_id(session):
     return session.client("sts").get_caller_identity()["Account"]
@@ -36,7 +43,7 @@ def get_regions(session):
 
 def list_resources(session, owner_id, region, config: ResourceConfig) -> list:
     client_name = getattr(config, "client_name", "ec2")
-    client = session.client(client_name, region_name=region)
+    client = session.client(client_name, region_name=region, config=CLIENT_CONFIG)
 
     method = getattr(client, config.describe_method)
     kwargs = {config.owner_key: [owner_id]} if config.owner_key else {}
@@ -53,7 +60,7 @@ def fetch_tags_for_arns(session, region, config, arns: list[str]) -> dict[str, l
         
     # Global resources (like IAM) MUST be queried for tags in us-east-1
     client_region = "us-east-1" if getattr(config, "is_global", False) else region
-    tag_client = session.client("resourcegroupstaggingapi", region_name=client_region)
+    tag_client = session.client("resourcegroupstaggingapi", region_name=client_region, config=CLIENT_CONFIG)
     tags_by_arn = {}
 
     # Chunk ARNs into batches of 100
@@ -85,6 +92,17 @@ def main():
     session = boto3.Session()
     owner_id = get_account_id(session)
     regions = [r for r in get_regions(session) if r not in args.skip_region]
+
+    # Only scan regions where this service actually exists.
+    client_name = getattr(config, "client_name", "ec2")
+    serviceable = set(session.get_available_regions(client_name))
+    if serviceable:
+        before = len(regions)
+        regions = [r for r in regions if r in serviceable]
+        skipped = before - len(regions)
+        if skipped:
+            print(f"Note: {client_name} is not offered in {skipped} of your regions; "
+                  f"skipping those.", file=sys.stderr)
 
     print(f"Account: {owner_id}", file=sys.stderr)
     print(f"Resource type: {args.resource_type}", file=sys.stderr)
