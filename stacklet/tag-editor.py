@@ -441,18 +441,24 @@ def apply_payload(body: dict) -> dict:
 
     total_tagged = 0
     total_errored = 0
+    total_unchanged = 0
     per_region: dict[str, dict] = {}
 
     for region in sorted(by_region):
         resources = by_region[region]
-        # Call the apply function
+        # Call the apply function (only resources needing a change are tagged)
         tagged, errored, _ = tag_resources_aws(
             session=session, region=region, resources=resources,
             dry_run=False, verbose=False, summarize=False,
         )
+        unchanged = len(resources) - tagged - errored
         total_tagged += tagged
         total_errored += errored
-        per_region[region] = {"resources": len(resources), "tagged": tagged, "errored": errored}
+        total_unchanged += unchanged
+        per_region[region] = {
+            "resources": len(resources), "tagged": tagged,
+            "errored": errored, "unchanged": unchanged,
+        }
 
     return {
         "ok": True,
@@ -461,6 +467,7 @@ def apply_payload(body: dict) -> dict:
         "rows_skipped": rows_skipped,
         "total_tagged": total_tagged,
         "total_errored": total_errored,
+        "total_unchanged": total_unchanged,
         "per_region": per_region,
     }
 

@@ -104,14 +104,15 @@ def write_report(results: list[dict], skipped_no_rbrk: list[str], skip_regions: 
         lines += [
             "## Summary",
             "",
-            "| Resource type | Account | Tagged | Errored | File |",
-            "|---|---|---|---|---|",
+            "| Resource type | Account | Tagged | Unchanged | Errored | File |",
+            "|---|---|---|---|---|---|",
         ]
         for r in ok_results:
             a = r["apply"]
             lines.append(
                 f"| {r['resource_type']} | {r['account_id']} | "
-                f"{a.get('total_tagged', 0)} | {a.get('total_errored', 0)} | {r['file']} |"
+                f"{a.get('total_tagged', 0)} | {a.get('total_unchanged', 0)} | "
+                f"{a.get('total_errored', 0)} | {r['file']} |"
             )
         lines.append("")
 
@@ -131,9 +132,12 @@ def write_report(results: list[dict], skipped_no_rbrk: list[str], skip_regions: 
                 continue
             if a.get("rows_skipped"):
                 lines.append(f"- Rows skipped (missing id/region): {a['rows_skipped']}")
-            lines += ["", "| Region | Resources | Tagged | Errored |", "|---|---|---|---|"]
+            lines += ["", "| Region | Resources | Tagged | Unchanged | Errored |", "|---|---|---|---|---|"]
             for region, info in a.get("per_region", {}).items():
-                lines.append(f"| {region} | {info['resources']} | {info['tagged']} | {info['errored']} |")
+                lines.append(
+                    f"| {region} | {info['resources']} | {info['tagged']} | "
+                    f"{info.get('unchanged', 0)} | {info['errored']} |"
+                )
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
@@ -194,7 +198,9 @@ def main() -> None:
             if a.get("message"):
                 print(f"  OK: {a['message']}", file=sys.stderr)
             else:
-                print(f"  OK: {a.get('total_tagged', 0)} tagged, {a.get('total_errored', 0)} errored", file=sys.stderr)
+                print(f"  OK: {a.get('total_tagged', 0)} tagged, "
+                      f"{a.get('total_unchanged', 0)} already correct, "
+                      f"{a.get('total_errored', 0)} errored", file=sys.stderr)
         else:
             print(f"  FAILED: {result['error']}", file=sys.stderr)
         results.append(result)

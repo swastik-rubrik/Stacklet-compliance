@@ -87,10 +87,17 @@ def tag_resources_aws(
     tagged = errored = 0
     changes: list[TagChange] = []
 
-    # Pre-fetch current tags for all resources in this region in one pass.
+    # Pre-fetch current tags in one pass
     current_by_id: dict[str, dict[str, str]] = {}
-    if dry_run and (verbose or summarize):
+    if not dry_run or verbose or summarize:
         current_by_id = fetch_current_tags(tagging_client, [arn for arn, _ in resources])
+
+    if not dry_run:
+        resources = [
+            (arn, tags)
+            for arn, tags in resources
+            if any(current_by_id.get(arn, {}).get(t["Key"]) != t["Value"] for t in tags)
+        ]
 
     # Group by tag fingerprint so resources with identical tags share a call.
     groups: dict[tuple, list[str]] = defaultdict(list)
@@ -234,6 +241,7 @@ def main() -> None:
 
     total_tagged = 0
     total_errored = 0
+    total_resources = sum(len(v) for v in by_region.values())
     all_changes: list[TagChange] = []
 
     print(f"{'Region':<25} {'Resources':>10}")
@@ -265,7 +273,7 @@ def main() -> None:
             log_file.close()
 
     print("-" * 36)
-    print(f"{'Total':<25} {total_tagged + total_errored:>10}")
+    print(f"{'Total':<25} {total_resources:>10}")
     print()
 
     if dry_run:
@@ -278,7 +286,8 @@ def main() -> None:
         print(f"DRY RUN: {total_tagged} resources would be tagged.")
         print("Run with --apply to make changes.")
     else:
-        print(f"Done: {total_tagged} resources tagged.")
+        unchanged = total_resources - total_tagged - total_errored
+        print(f"Done: {total_tagged} resources tagged, {unchanged} already correct (skipped).")
         if total_errored:
             sys.exit(1)
 
