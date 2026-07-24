@@ -16,6 +16,41 @@ pip3 install -r requirements.txt
 You can add additional resource config in static/resource_type_list.py  and static/resource_type_update.py 
 
 
+## Flow
+
+```
+Step 1 — LIST         (scripts/run-listings.py → list-resource-aws.py)
+  elbv2.describe_load_balancers      → find the ELB + its ARN
+  resourcegroupstaggingapi.get_resources([arn])  → read its CURRENT tags
+        │
+        ▼  writes one row to outputs/<...>.csv
+   name, region, arn, ...meta..., rbrk_env, rbrk_owner, ...
+   (rbrk_* cells = current value, or "undefined"/empty if the tag is absent)
+
+Step 2 — FILL         (scripts/automate-tagging.py)   ← NO AWS CALL
+  empty / "undefined" rbrk_* cells → account defaults (rbrk-values-<acct>.json)
+        │
+        ▼  writes inputs/make_changes-elb-<acct>-<ts>.csv   (= source of truth)
+           + outputs/dry-run-...txt (local preview)
+
+Step 3 — DRY-RUN      (optional, AWS READ only)
+  resourcegroupstaggingapi.get_resources([arn])  → current tags
+  compare desired(CSV) vs current → report [+]/[~]/[=]      ← NO WRITE
+
+Step 4 — APPLY        (update_tags-aws.py --apply / automate-apply.py / UI "Apply Tags")
+  resourcegroupstaggingapi.get_resources([arn])  → current tags   (the fetch)
+        │
+        ▼  compare desired vs current  (equality)
+        ├─ all rbrk_* already match  ──────────────►  SKIP  (no API call, "unchanged")
+        └─ something missing/different
+                 │
+                 ▼  PUSH
+             resourcegroupstaggingapi.tag_resources(
+                 ResourceARNList=[elb_arn],
+                 Tags={"rbrk_env":"prod", "rbrk_owner":"sre", ...})
+
+```
+
 ## Steps
 
 **1. Create `inputs/rbrk-values-<account-id>.json`** — the values for the 6
