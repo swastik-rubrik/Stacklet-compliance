@@ -13,9 +13,9 @@ For every listing CSV sitting flat in outputs/ , this:
        covering every resource type processed in this run.
 
 Usage:
-    python3 automate-tagging.py                    # process every eligible listing CSV in outputs/
-    python3 automate-tagging.py --only ecr s3      # restrict to specific resource types
-    python3 automate-tagging.py --skip-region me-central-1
+    python3 scripts/automate-tagging.py                    # process every eligible listing CSV in outputs/
+    python3 scripts/automate-tagging.py --only ecr s3      # restrict to specific resource types
+    python3 scripts/automate-tagging.py --skip-region me-central-1
 """
 
 import argparse

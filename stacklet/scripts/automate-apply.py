@@ -6,9 +6,9 @@ This is the automated equivalent of clicking tag-editor.py's "Apply Tags" button
 the make_changes-*.csv files sitting flat in inputs/ and applies each to AWS.
 
 Usage:
-    python3 automate-apply.py                    # apply every make_changes file for the selected types
-    python3 automate-apply.py --only s3 ebs      # restrict to specific resource types
-    python3 automate-apply.py --skip-region me-central-1
+    python3 scripts/automate-apply.py                    # apply every make_changes file for the selected types
+    python3 scripts/automate-apply.py --only s3 ebs      # restrict to specific resource types
+    python3 scripts/automate-apply.py --skip-region me-central-1
 """
 
 import argparse

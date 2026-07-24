@@ -5,9 +5,9 @@ run_listings.py - loop  over resources.
 Examples
 --------
   awslogin(alias) <account-name>        
-  python3 run-listings.py --skip-region me-central-1
-  python3 run-listings.py --only rds --only s3
-  python3 run-listings.py --exclude ecs --exclude eks --exclude dynamodb-table
+  python3 scripts/run-listings.py --skip-region me-central-1
+  python3 scripts/run-listings.py --only rds --only s3
+  python3 scripts/run-listings.py --exclude ecs --exclude eks --exclude dynamodb-table
 """
 
 import argparse
