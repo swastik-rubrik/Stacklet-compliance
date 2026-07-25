@@ -55,11 +55,36 @@ def list_resources(session, owner_id, region, config: ResourceConfig) -> list:
         results = config.result_filter(results, owner_id)
     return results
 
+def _fetch_s3_tags_native(session, arns: list[str]) -> dict[str, list[dict]]:
+    """S3 tags live in the bucket's HOME region, not a single global endpoint.
+    Fetch per bucket: get_bucket_location -> get_bucket_tagging in that region."""
+    out: dict[str, list[dict]] = {}
+    loc = session.client("s3", region_name="us-east-1", config=CLIENT_CONFIG)
+    for arn in arns:
+        bucket = arn.split(":::")[-1]
+        try:
+            home = loc.get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-east-1"
+            s3 = session.client("s3", region_name=home, config=CLIENT_CONFIG)
+            try:
+                out[arn] = [{"Key": t["Key"], "Value": t["Value"]}
+                            for t in s3.get_bucket_tagging(Bucket=bucket)["TagSet"]]
+            except Exception:
+                out[arn] = []  # NoSuchTagSet -> untagged
+        except Exception as e:
+            print(f"  Warning: S3 tag fetch failed for {bucket} ({e})", file=sys.stderr)
+            out[arn] = []
+    return out
+
+
 def fetch_tags_for_arns(session, region, config, arns: list[str]) -> dict[str, list[dict]]:
     """Fetch tags in bulk for a list of ARNs using the Tagging API (Max 100 per call)."""
     if not arns:
         return {}
-        
+
+    # S3 tags are region-scoped to each bucket -> fetch natively, not via RGT.
+    if getattr(config, "native_s3_tags", False):
+        return _fetch_s3_tags_native(session, arns)
+
     # Global resources (like IAM) MUST be queried for tags in us-east-1
     client_region = "us-east-1" if getattr(config, "is_global", False) else region
     tag_client = session.client("resourcegroupstaggingapi", region_name=client_region, config=CLIENT_CONFIG)

@@ -20,7 +20,8 @@ class ResourceConfig:
     client_name: str = "ec2"          
     is_global: bool = False
     extra_kwargs: dict | None = None
-    account_id_param: str = ""          
+    account_id_param: str = ""          # if set, pass {account_id_param: account_id} to the describe call
+    native_s3_tags: bool = False        # fetch tags per-bucket from its HOME region (S3), not RGT us-east-1
 
 
 
@@ -714,9 +715,10 @@ RESOURCE_TYPES: dict[str, ResourceConfig] = {
         extract_meta=lambda x: [str(x.get("CreationDate", ""))],
         trailing_columns=[], extract_trailing=lambda _: [],
         is_global=True,
-        # TAG WARNING: RGT returns S3 tags only from the bucket's HOME region.
-        # is_global pins the tag client to us-east-1 -> non-us-east-1 buckets get
-        # empty tags. Use native s3.get_bucket_tagging(Bucket=...) if you need them.
+        # RGT returns S3 tags only from the bucket's HOME region, so tags are
+        # fetched natively per bucket (get_bucket_location + get_bucket_tagging)
+        # instead of RGT us-east-1 -- otherwise non-us-east-1 buckets show empty.
+        native_s3_tags=True,
     ),
     "s3-storage-lens":                        ResourceConfig(
         client_name="s3control",
