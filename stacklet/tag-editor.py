@@ -57,6 +57,7 @@ from static.resource_type_update import RESOURCE_TYPES
 
 _update_tags_aws = importlib.import_module("update_tags-aws")
 tag_resources_aws = _update_tags_aws.tag_resources_aws
+apply_tags_for_type = _update_tags_aws.apply_tags_for_type
 verify_account    = _update_tags_aws.verify_account
 fetch_current_tags = _update_tags_aws.fetch_current_tags
 
@@ -353,9 +354,9 @@ def apply_dry_run_payload(body: dict) -> dict:
 
     for region in sorted(by_region):
         resources = by_region[region]
-        # Call the dry-run function
-        tagged, errored, changes = tag_resources_aws(
-            session=session, region=region, resources=resources,
+        # Call the dry-run function (dispatches to the right tagger per type)
+        tagged, errored, changes = apply_tags_for_type(
+            session, region, resources, resource_type,
             dry_run=True, verbose=False, summarize=True,
         )
         all_changes.extend(changes)
@@ -446,9 +447,9 @@ def apply_payload(body: dict) -> dict:
 
     for region in sorted(by_region):
         resources = by_region[region]
-        # Call the apply function (only resources needing a change are tagged)
-        tagged, errored, _ = tag_resources_aws(
-            session=session, region=region, resources=resources,
+        # Call the apply function (dispatches per type; only changed are tagged)
+        tagged, errored, _ = apply_tags_for_type(
+            session, region, resources, resource_type,
             dry_run=False, verbose=False, summarize=False,
         )
         unchanged = len(resources) - tagged - errored

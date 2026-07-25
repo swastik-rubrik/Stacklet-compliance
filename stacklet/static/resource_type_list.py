@@ -20,6 +20,7 @@ class ResourceConfig:
     client_name: str = "ec2"          
     is_global: bool = False
     extra_kwargs: dict | None = None
+    account_id_param: str = ""          
 
 
 
@@ -729,6 +730,7 @@ RESOURCE_TYPES: dict[str, ResourceConfig] = {
         extract_meta=lambda x: [x.get("Id", ""), str(x.get("IsEnabled", ""))],
         trailing_columns=[],
         extract_trailing=lambda _: [],
+        account_id_param="AccountId",   # s3control.list_storage_lens_configurations requires AccountId
     ),
     "secrets-manager":                        ResourceConfig(
         client_name="secretsmanager",

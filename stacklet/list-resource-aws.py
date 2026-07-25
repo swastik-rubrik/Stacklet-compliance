@@ -48,6 +48,8 @@ def list_resources(session, owner_id, region, config: ResourceConfig) -> list:
     method = getattr(client, config.describe_method)
     kwargs = {config.owner_key: [owner_id]} if config.owner_key else {}
     kwargs.update(getattr(config, "extra_kwargs", {}) or {})
+    if getattr(config, "account_id_param", ""):
+        kwargs[config.account_id_param] = owner_id   # e.g. s3control needs AccountId=<id>
     results = method(**kwargs)[config.response_key]
     if config.result_filter:
         results = config.result_filter(results, owner_id)

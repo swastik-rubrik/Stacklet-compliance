@@ -34,6 +34,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import boto3
+from static.special_taggers import SPECIAL_TAGGERS
 from update_tags_common import (build_tags, parse_filename, TagChange, write_change_report, format_change_line)
 from static.resource_type_update import RESOURCE_TYPES
 
@@ -138,16 +139,28 @@ def tag_resources_aws(
                 tagged += len(batch)
             else:
                 try:
-                    tagging_client.tag_resources(ResourceARNList=batch, Tags=tag_dict)
+                    resp = tagging_client.tag_resources(ResourceARNList=batch, Tags=tag_dict)
+                    failed = resp.get("FailedResourcesMap", {}) or {}
+                    for arn, info in failed.items():
+                        print(f"  FAILED {arn}: {info.get('ErrorCode', '')} "
+                              f"{info.get('ErrorMessage', '')}", file=sys.stderr)
+                    tagged += len(batch) - len(failed)
+                    errored += len(failed)
                     if verbose:
                         for arn in batch:
-                            print(f"  Tagged {arn} ({len(tags)} tags)", file=verbose_out)
-                    tagged += len(batch)
+                            if arn not in failed:
+                                print(f"  Tagged {arn} ({len(tags)} tags)", file=verbose_out)
                 except Exception as exc:
                     print(f"  ERROR batch [{batch[0]} …]: {exc}", file=sys.stderr)
                     errored += len(batch)
 
     return tagged, errored, changes
+
+
+def apply_tags_for_type(session, region, resources, resource_type, dry_run, verbose, summarize, verbose_out=sys.stdout):
+    """Dispatch: route a resource type to its tagger. Default = RGT (regional)."""
+    handler = SPECIAL_TAGGERS.get(resource_type, tag_resources_aws)
+    return handler(session, region, resources, dry_run, verbose, summarize, verbose_out)
 
 
 def print_change_summary(changes: list[TagChange]) -> None:
@@ -262,8 +275,8 @@ def main() -> None:
             resources = by_region[region]
             print(f"{region:<25} {len(resources):>10}")
 
-            tagged, errored, changes = tag_resources_aws(
-                session, region, resources, dry_run, verbose, args.summarize, verbose_out
+            tagged, errored, changes = apply_tags_for_type(
+                session, region, resources, resource_type, dry_run, verbose, args.summarize, verbose_out
             )
             total_tagged += tagged
             total_errored += errored
