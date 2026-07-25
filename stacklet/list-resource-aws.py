@@ -148,14 +148,17 @@ def main():
         if resources:
             for r in resources:
                 r["_arn"] = config.arn_formatter(r[config.id_field], region, owner_id)
-            
-            # Bulk fetch tags for all generated ARNs
-            arns = [r["_arn"] for r in resources]
-            tags_by_arn = fetch_tags_for_arns(session, region, config, arns)
 
-            for r in resources:
-                r["Tags"] = tags_by_arn.get(r["_arn"], [])
-                all_resources.append({"region": region, **r})
+            if getattr(config, "tags_in_response", False):
+                for r in resources:
+                    r["Tags"] = r.get("Tags", []) or []
+                    all_resources.append({"region": region, **r})
+            else:
+                arns = [r["_arn"] for r in resources]
+                tags_by_arn = fetch_tags_for_arns(session, region, config, arns)
+                for r in resources:
+                    r["Tags"] = tags_by_arn.get(r["_arn"], [])
+                    all_resources.append({"region": region, **r})
 
             region_counts[region] = len(resources)
             print(f"  {region}: {len(resources)}", file=sys.stderr)

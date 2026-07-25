@@ -21,7 +21,9 @@ class ResourceConfig:
     is_global: bool = False
     extra_kwargs: dict | None = None
     account_id_param: str = ""          # if set, pass {account_id_param: account_id} to the describe call
+    # for s3-storage-lens and asg
     native_s3_tags: bool = False        # fetch tags per-bucket from its HOME region (S3), not RGT us-east-1
+    tags_in_response: bool = False      # describe call already returns tags inline (e.g. ASG) -> skip RGT
 
 
 
@@ -128,6 +130,9 @@ RESOURCE_TYPES: dict[str, ResourceConfig] = {
         extract_meta=lambda x: [x.get("AutoScalingGroupName", "")],
         trailing_columns=[],
         extract_trailing=lambda _: [],
+        # describe_auto_scaling_groups returns each group's Tags inline; RGT can't
+        # tag ASGs, so read tags from the describe response instead.
+        tags_in_response=True,
     ),
     "athena-work-group":                          ResourceConfig(
         client_name="athena",
