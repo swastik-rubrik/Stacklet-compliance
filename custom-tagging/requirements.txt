@@ -1,0 +1,4 @@
+boto3
+google-cloud-resource-manager
+azure-identity
+azure-mgmt-resource
