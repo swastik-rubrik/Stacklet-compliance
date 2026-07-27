@@ -44,12 +44,15 @@ from urllib.parse import urlparse, parse_qs
 
 import boto3
 
-HERE = Path(__file__).resolve().parent
-OUTPUT_DIR = HERE.parent / "outputs"   # source list CSVs (read) + dry-run change logs (write)
-INPUT_DIR = HERE.parent / "inputs"     # generated make_changes CSVs (write)
+HERE = Path(__file__).resolve().parent            # stacklet/aws
+STACKLET = HERE.parent                             # stacklet/ (shared helpers.py)
+OUTPUT_DIR = STACKLET.parent / "outputs"   # source list CSVs (read) + dry-run change logs (write)
+INPUT_DIR = STACKLET.parent / "inputs"     # generated make_changes CSVs (write)
 
-sys.path.insert(0, str(HERE))
-from update_tags_common import (
+for _p in (str(HERE), str(STACKLET)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+from helpers import (
     FILENAME_PATTERN, TagChange, write_change_report_txt,
     build_tags, parse_filename, is_placeholder,
 )

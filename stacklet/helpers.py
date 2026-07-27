@@ -1,14 +1,10 @@
 """Shared CSV parsing and tag-column detection for make_changes provider scripts.
 
-Imported by make_changes-aws.py, make_changes-gcp.py, make_changes-azure.py.
-Provider-specific RESOURCE_TYPES dicts and cloud API calls live in each script.
-
 Filename convention (all providers):
-    make_changes-{resource_type}-{account_id}-{timestamp}[-comment].csv
+    make_changes-{resource_type}-{account_id}-{timestamp}.csv
 
     resource_type  Provider-defined (e.g. snapshots, volumes, instances)
     account_id     AWS account ID / GCP project number / Azure subscription ID
-    comment        Optional free-text label after the timestamp (ignored by the script)
 
 Tag column detection:
     Any CSV column that is not the resource ID, 'name', 'region', or in the
@@ -18,14 +14,18 @@ Tag column detection:
 """
 
 import csv
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
-FILENAME_PATTERN = re.compile(
-    r"make_changes-(?P<resource_type>[a-z][a-z0-9-]*)-(?P<account_id>\d{12})-\d{8}-\d{6}(?:-[^.]+)?\.csv$"
-)
+# AWS-strict validator (account_id = 12 digits). Kept for callers that only need
+# a boolean "is this a well-formed AWS make_changes name?" check (e.g. tag-editor).
+FILENAME_PATTERN = re.compile(r"make_changes-(?P<resource_type>[a-z][a-z0-9-]*)-(?P<account_id>\d{12})-\d{8}-\d{6}(?:-[^.]+)?\.csv$")
+
+# accepts any account_id shape - AWS 12-digit account IDs AND GCP project IDs (lowercase letters/digits/hyphens, variable length) -- without ambiguity.
+_PARSE_PATTERN = re.compile(r"make_changes-(?P<body>.+?)-(?P<timestamp>\d{8}-\d{6})(?:-[^.]+)?\.csv$")
 
 NAME_COLUMN = "name"   # CSV column holding the human-readable name; never applied as a tag
 
@@ -65,21 +65,32 @@ def parse_filename(path: Path, valid_types: dict) -> tuple[str, str]:
     Exits with a clear error if the filename doesn't match the convention or
     the resource type isn't in valid_types.
     """
-    m = FILENAME_PATTERN.match(path.name)
+    m = _PARSE_PATTERN.match(path.name)
     if not m:
         raise SystemExit(
             f"Filename '{path.name}' does not match expected pattern:\n"
             f"  make_changes-{{resource_type}}-{{account_id}}-YYYYMMDD-HHMMSS[-comment].csv\n"
             f"  Supported resource types: {', '.join(valid_types)}"
         )
-    resource_type = m.group("resource_type")
-    if resource_type not in valid_types:
+    body = m.group("body")   # "{resource_type}-{account_id}"
+
+    # resource_type = longest valid key such that body == key or body starts with key + "-".
+    candidates = [t for t in valid_types if body == t or body.startswith(f"{t}-")]
+    if not candidates:
         raise SystemExit(
-            f"Unknown resource type '{resource_type}'.\n"
+            f"Unknown resource type in '{path.name}'.\n"
             f"Supported: {', '.join(valid_types)}\n"
             f"To add support, add an entry to RESOURCE_TYPES in the provider script."
         )
-    return resource_type, m.group("account_id")
+    resource_type = max(candidates, key=len)
+
+    account_id = body[len(resource_type) + 1:]   # drop "resource_type-"
+    if not account_id:
+        raise SystemExit(
+            f"Could not parse account_id/project from '{path.name}'.\n"
+            f"  Expected: make_changes-{resource_type}-{{account_id}}-YYYYMMDD-HHMMSS.csv"
+        )
+    return resource_type, account_id
 
 
 def is_placeholder(value: str) -> bool:
@@ -152,3 +163,43 @@ def write_change_report_txt(changes: list[TagChange], input_path: Path) -> Path:
             for line in lines:
                 f.write(line + "\n")
     return outfile
+
+
+def resolve_project(explicit: str | None = None) -> str:
+    """Return the GCP project to act on.
+
+    Precedence: explicit arg -> $GOOGLE_CLOUD_PROJECT / $GCLOUD_PROJECT -> the
+    Application Default Credentials project (the "present" project you logged in
+    with). Shared by the GCP lister and apply automations so "just use the
+    current project" behaves identically everywhere.
+    """
+    if explicit:
+        return explicit
+    env = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
+    if env:
+        return env
+    try:
+        import google.auth
+        _, project = google.auth.default()
+    except Exception as e:
+        raise SystemExit(
+            f"Could not determine GCP project ({e}).\n"
+            f"Pass --project, set $GOOGLE_CLOUD_PROJECT, or run "
+            f"'gcloud auth application-default login'."
+        )
+    if not project:
+        raise SystemExit(
+            "No default project found. Pass --project or set $GOOGLE_CLOUD_PROJECT."
+        )
+    return project
+
+
+def split_type_project(body: str, valid_types) -> tuple[str, str] | None:
+    """Split a '<resource_type>-<account_or_project>' body against known types.
+    """
+    candidates = [t for t in valid_types if body == t or body.startswith(f"{t}-")]
+    if not candidates:
+        return None
+    rtype = max(candidates, key=len)
+    ident = body[len(rtype) + 1:]
+    return (rtype, ident) if ident else None

@@ -3,3 +3,5 @@ azure-identity
 azure-mgmt-compute
 pyyaml
 google-cloud-compute
+google-cloud-storage
+google-cloud-bigquery

@@ -22,9 +22,16 @@ import sys
 from botocore.config import Config
 from datetime import datetime, timezone
 from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent          # stacklet/aws
+_STACKLET = _HERE.parent                          # stacklet/
+for _p in (str(_HERE), str(_STACKLET)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from static.resource_type_list import ResourceConfig, RESOURCE_TYPES
 
-OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
+OUTPUT_DIR = _STACKLET.parent / "outputs"          # repo-root/outputs
 
 CLIENT_CONFIG = Config(
     connect_timeout=5,

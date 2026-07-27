@@ -34,12 +34,19 @@ from collections import defaultdict
 from pathlib import Path
 
 import boto3
+
+_HERE = Path(__file__).resolve().parent          # stacklet/aws
+_STACKLET = _HERE.parent                          # stacklet/
+for _p in (str(_HERE), str(_STACKLET)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from static.special_taggers import SPECIAL_TAGGERS
-from update_tags_common import (build_tags, parse_filename, TagChange, write_change_report, format_change_line)
+from helpers import (build_tags, parse_filename, TagChange, write_change_report, format_change_line)
 from static.resource_type_update import RESOURCE_TYPES
 
 _BATCH_SIZE = 1_000
-OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
+OUTPUT_DIR = _STACKLET.parent / "outputs"          # repo-root/outputs
 
 _GET_RESOURCES_CHUNK = 100  # AWS limit for GetResources ResourceARNList
 _TAG_RESOURCES_BATCH = 20   # AWS limit for tag_resources ResourceARNList
